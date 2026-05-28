@@ -1093,20 +1093,32 @@ async function initSupabaseSync() {
     supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
       realtime: { params: { eventsPerSecond: 10 } }
     });
-    // 1) PULL: fetch all keys from cloud and merge into localStorage (cloud wins for newer)
+    // 1) PULL: fetch all keys from cloud and merge into localStorage (cloud wins)
+    const cloudKeys = new Set();
     const { data: cloudRows, error } = await supabaseClient.from('pos_data').select('key,value,updated_at');
     if (error) throw error;
     if (cloudRows && cloudRows.length) {
       cloudRows.forEach(row => {
         try {
+          cloudKeys.add(row.key);
           localStorage.setItem(row.key, JSON.stringify(row.value));
         } catch(e) { console.error('[Sync] LS write failed:', e); }
       });
       console.log(`[Sync] Pulled ${cloudRows.length} keys from cloud`);
+      // If we're on the login screen, re-render it so the user list reflects
+      // the freshly-pulled cloud config (new passwords, users, etc.)
+      try {
+        const ls = document.getElementById('login-screen');
+        if (ls && ls.style.display !== 'none' && typeof showLogin === 'function') showLogin();
+      } catch(e) {}
     }
-    // 2) PUSH any pending writes that piled up while loading
+    // 2) PUSH pending writes — BUT skip keys the cloud already has.
+    //    Those queued writes are stale local defaults/migrations from this device's
+    //    boot-up seeding; pushing them would clobber authoritative cloud data
+    //    (e.g. a password changed on another device). Cloud always wins on conflict.
     while (pendingWrites.length) {
       const { key, value } = pendingWrites.shift();
+      if (cloudKeys.has(key)) continue; // cloud is authoritative for this key
       await pushToCloud(key, value);
     }
     // 3) SUBSCRIBE to realtime changes
