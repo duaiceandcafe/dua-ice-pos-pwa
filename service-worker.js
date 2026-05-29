@@ -2,7 +2,7 @@
 // Cache-first strategy: app works fully offline once installed.
 // When online, sync via Supabase happens through the main app code.
 
-const CACHE_NAME = 'dua-ice-pos-v3';
+const CACHE_NAME = 'dua-ice-pos-v4';
 const STATIC_ASSETS = [
   './',
   './index.html',
@@ -54,6 +54,44 @@ self.addEventListener('fetch', event => {
         }
         return response;
       }).catch(() => caches.match('./index.html'));
+    })
+  );
+});
+
+// Push: show notification even when app is closed / phone locked
+self.addEventListener('push', event => {
+  let data = { title: 'Dua Ice & Cafe', body: '', tag: 'dua-' + Date.now(), url: '/' };
+  try {
+    if (event.data) {
+      const parsed = event.data.json();
+      data = Object.assign(data, parsed);
+    }
+  } catch (e) {
+    if (event.data) data.body = event.data.text();
+  }
+  event.waitUntil(
+    self.registration.showNotification(data.title, {
+      body: data.body,
+      tag: data.tag,
+      renotify: true,
+      icon: './icons/icon-192.png',
+      badge: './icons/icon-192.png',
+      data: { url: data.url || '/' },
+      vibrate: [120, 60, 120]
+    })
+  );
+});
+
+// Notification click: focus existing window or open the app
+self.addEventListener('notificationclick', event => {
+  event.notification.close();
+  const targetUrl = (event.notification.data && event.notification.data.url) || './';
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
+      for (const client of list) {
+        if ('focus' in client) return client.focus();
+      }
+      if (clients.openWindow) return clients.openWindow(targetUrl);
     })
   );
 });
