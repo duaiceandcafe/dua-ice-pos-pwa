@@ -2,14 +2,24 @@
 // Cache-first strategy: app works fully offline once installed.
 // When online, sync via Supabase happens through the main app code.
 
-const CACHE_NAME = 'dua-ice-pos-v5';
+const CACHE_NAME = 'dua-ice-pos-v6';
 const STATIC_ASSETS = [
-  './',
   './index.html',
   './manifest.json',
   './icons/icon-192.png',
   './icons/icon-512.png'
 ];
+
+// iOS/Safari refuses a redirected response for a navigation. Rebuild a clean copy.
+async function cleanResponse(response) {
+  if (!response || !response.redirected) return response;
+  const body = await response.blob();
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers
+  });
+}
 
 // Install: pre-cache shell
 self.addEventListener('install', event => {
@@ -33,27 +43,47 @@ self.addEventListener('activate', event => {
   self.clients.claim();
 });
 
-// Fetch: cache-first for same-origin assets, network-first for Supabase / API
+// Fetch
 self.addEventListener('fetch', event => {
-  const url = new URL(event.request.url);
-  // Skip non-GET requests
-  if (event.request.method !== 'GET') return;
+  const req = event.request;
+  if (req.method !== 'GET') return;
+  const url = new URL(req.url);
   // Always go to network for Supabase API calls (real-time data)
   if (url.host.includes('supabase.co') || url.host.includes('supabase.io')) {
     return; // let browser handle normally
   }
-  // Cache-first for everything else (HTML, JS, CSS, images, CDNs we pre-cached)
+
+  // Page navigations → always serve a clean index.html (fixes the
+  // "Response served by service worker has redirections" error on iOS).
+  if (req.mode === 'navigate') {
+    event.respondWith((async () => {
+      try {
+        const net = await fetch('./index.html', { redirect: 'follow' });
+        const clean = await cleanResponse(net);
+        if (net.ok) {
+          const cache = await caches.open(CACHE_NAME);
+          cache.put('./index.html', clean.clone());
+        }
+        return clean;
+      } catch (e) {
+        const cached = await caches.match('./index.html');
+        return cached ? cleanResponse(cached) : Response.error();
+      }
+    })());
+    return;
+  }
+
+  // Everything else → cache-first
   event.respondWith(
-    caches.match(event.request).then(cached => {
+    caches.match(req).then(cached => {
       if (cached) return cached;
-      return fetch(event.request).then(response => {
-        // Cache successful responses for next time
-        if (response.ok && (url.origin === location.origin || url.host.includes('jsdelivr') || url.host.includes('googleapis') || url.host.includes('gstatic'))) {
+      return fetch(req).then(response => {
+        if (response.ok && !response.redirected && (url.origin === location.origin || url.host.includes('jsdelivr') || url.host.includes('googleapis') || url.host.includes('gstatic'))) {
           const clone = response.clone();
-          caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
+          caches.open(CACHE_NAME).then(cache => cache.put(req, clone));
         }
         return response;
-      }).catch(() => caches.match('./index.html'));
+      }).catch(() => caches.match('./index.html').then(c => c ? cleanResponse(c) : Response.error()));
     })
   );
 });
