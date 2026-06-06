@@ -2,7 +2,7 @@
 // Cache-first strategy: app works fully offline once installed.
 // When online, sync via Supabase happens through the main app code.
 
-const CACHE_NAME = 'dua-ice-pos-v7';
+const CACHE_NAME = 'dua-ice-pos-v8';
 const STATIC_ASSETS = [
   './index.html',
   './manifest.json',
