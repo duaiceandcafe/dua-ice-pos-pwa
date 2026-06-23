@@ -2795,6 +2795,7 @@ function finishFlavors() {
   state.flavorScoops = [];
   // Return to products grid (one tap to add another)
   backToProducts();
+  renderCart(); // refresh cart panel so the scooped item shows immediately
   animateCartBadge();
 }
 
