@@ -1,6 +1,8 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "dua-ice-pos-pwa",
+  "account_id": "90370c56393a27d16819a6211a864a58",
+  "workers_dev": true,
   "compatibility_date": "2025-01-01",
   "assets": {
     "directory": "./",
