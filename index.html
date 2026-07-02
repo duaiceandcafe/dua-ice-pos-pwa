@@ -1280,6 +1280,9 @@ function applyCloudRow(row, deleted) {
       // Also keep any local shifts not present in the incoming cloud array
       local.forEach(s => { if (!merged.some(m => m.id === s.id)) merged.push(s); });
       localStorage.setItem('tpv_shifts', JSON.stringify(merged));
+      // Collapse any orphan open shifts brought in by the sync (deterministic on
+      // every device) so two devices never end up with two shifts open at once.
+      try { enforceSingleOpenShift(); } catch(e) {}
       // Re-sync in-memory activeShift if we're logged in
       if (state.currentUser) { try { loadActiveShift(); updateShiftBadge(); } catch(e) {} }
     } else {
@@ -2337,7 +2340,41 @@ window.showStockAlerts = function() {
   </div>`);
 };
 
+// GLOBAL GUARD — at most ONE shift open at any time (single physical cash drawer).
+// Deterministic: every device keeps the most-recently-opened shift and closes the
+// rest, so all devices converge on the same result (no sync war). Each closed shift
+// is reconciled from its own sales. Writes via LS.set so the closures sync to cloud.
+function enforceSingleOpenShift() {
+  const shifts = LS.get('tpv_shifts') || [];
+  const open = shifts.filter(s => s.status === 'open');
+  if (open.length <= 1) return open[0] || null;
+  open.sort((a, b) => new Date(b.openedAt || 0) - new Date(a.openedAt || 0));
+  const keep = open[0];
+  const now = new Date().toISOString();
+  const sales = LS.get('tpv_sales') || [];
+  let changed = false;
+  shifts.forEach(s => {
+    if (s.status === 'open' && s.id !== keep.id) {
+      s.status = 'closed';
+      s.closedAt = s.closedAt || now;
+      s.forceClosedBecauseOrphan = true;
+      const shSales = sales.filter(x => x.shiftId === s.id && x.status === 'completed');
+      s.cashSales  = shSales.filter(x => x.paymentMethod === 'cash').reduce((a, x) => a + x.total, 0);
+      s.cardSales  = shSales.filter(x => x.paymentMethod === 'card').reduce((a, x) => a + x.total, 0);
+      s.otherSales = shSales.filter(x => x.paymentMethod === 'other').reduce((a, x) => a + x.total, 0);
+      s.totalSales = s.cashSales + s.cardSales + s.otherSales;
+      s.totalTickets = shSales.length;
+      s.expectedCash = (s.openingFloat || 0) + s.cashSales;
+      if (s.countedCash == null) s.countedCash = s.expectedCash;
+      changed = true;
+    }
+  });
+  if (changed) { LS.set('tpv_shifts', shifts); console.warn('[Shift] enforced single open shift, kept', keep.id); }
+  return keep;
+}
+
 function loadActiveShift() {
+  enforceSingleOpenShift(); // collapse any orphan open shifts first (all devices agree)
   const shifts = LS.get('tpv_shifts') || [];
   const userId = state.currentUser?.id;
   if (!userId) { state.activeShift = null; return; }
