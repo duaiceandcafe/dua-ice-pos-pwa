@@ -2149,14 +2149,33 @@ function saveNewPassword(userId) {
 
 function openMandatoryShiftModal() {
   if (state.activeShift) return;
+  // Same "what's in the drawer now" reminder as the manual Open Shift flow:
+  // pre-fill with the cash counted at the LAST close (carried over to today).
+  const closedShifts = (LS.get('tpv_shifts')||[])
+    .filter(s => s.status === 'closed' && s.closedAt)
+    .sort((a,b) => new Date(b.closedAt) - new Date(a.closedAt));
+  const lastClose = closedShifts[0];
+  const lastBalance = lastClose ? (lastClose.countedCash ?? lastClose.expectedCash ?? lastClose.openingFloat ?? 0) : null;
+  const isFirst = lastBalance === null;
+  const startVal = isFirst ? 0 : lastBalance;
+  const closedWhen = lastClose && lastClose.closedAt ? new Date(lastClose.closedAt).toLocaleString() : '';
+
+  const reminder = isFirst
+    ? `<div style="background:#fff3e0;border-radius:10px;padding:12px;margin-bottom:14px;font-size:13px;color:#b7770d;text-align:center">
+         ⚠️ You must open a shift before making any sale.
+       </div>`
+    : `<div style="background:#e8f4ff;border:1px solid #bcdcff;border-radius:10px;padding:12px;margin-bottom:14px;font-size:13px;line-height:1.6">
+         💰 Last time you closed (<strong>${closedWhen}</strong>) the register had
+         <strong style="font-family:'Space Mono',monospace">${fmt(lastBalance)}</strong>.<br>
+         <span style="color:var(--text-sec)">If no cash was removed, keep it. Otherwise edit the real amount.</span>
+       </div>`;
+
   showModal(`<div class="modal modal-sm" style="border:3px solid var(--accent-gold)">
     <div class="modal-header"><span class="modal-title">🔓 Open Shift Required</span></div>
     <div class="modal-body">
-      <div style="background:#fff3e0;border-radius:10px;padding:12px;margin-bottom:14px;font-size:13px;color:#b7770d;text-align:center">
-        ⚠️ You must open a shift before making any sale.
-      </div>
-      <div class="form-group"><label>Opening Float (cash in drawer at start) *</label>
-        <input type="number" id="opening-float" step="1" min="0" value="0" placeholder="0" style="font-family:'Space Mono',monospace;font-size:18px;font-weight:700;text-align:right">
+      ${reminder}
+      <div class="form-group"><label>${isFirst ? 'Opening Float (cash in drawer at start) *' : 'Cash in register now (Rs) *'}</label>
+        <input type="number" id="opening-float" step="1" min="0" value="${startVal}" placeholder="0" style="font-family:'Space Mono',monospace;font-size:18px;font-weight:700;text-align:right">
       </div>
       <div style="font-size:12px;color:var(--text-sec)">Cashier: <strong>${escHtml(state.currentUser.name)}</strong> · Date: <strong>${new Date().toLocaleDateString('en-GB')}</strong></div>
     </div>
@@ -2165,6 +2184,7 @@ function openMandatoryShiftModal() {
       <button class="btn btn-success btn-charge" style="flex:1;max-width:280px" onclick="confirmOpenShift();if(state.activeShift)this.closest('.modal-overlay').remove()">🔓 OPEN SHIFT</button>
     </div>
   </div>`, { mandatory: true });
+  setTimeout(() => { const el = document.getElementById('opening-float'); if (el) { el.focus(); el.select(); } }, 100);
 }
 
 function doLogout() {
@@ -2790,13 +2810,15 @@ function finishFlavors() {
     unitPrice: product.salePrice, costPrice: product.costPrice, vat: product.vat,
     isIceCream: true, scoops, subtotal: product.salePrice
   });
-  toast(`${product.name} added`, 'success', 1500);
   state.flavorProduct = null;
   state.flavorScoops = [];
+  // Refresh cart FIRST (before any view change) so the scooped item shows
+  // immediately even if a later render step fails.
+  try { renderCart(); animateCartBadge(); } catch(e) { console.error(e); }
+  toast(`${product.name} added`, 'success', 1500);
   // Return to products grid (one tap to add another)
   backToProducts();
-  renderCart(); // refresh cart panel so the scooped item shows immediately
-  animateCartBadge();
+  try { renderCart(); } catch(e) {}
 }
 
 function renderSizeGridBack() {
@@ -3358,9 +3380,13 @@ function confirmSale(total) {
   updateShiftBadge();
   toast(`Sale completed! Order #${String(orderNum).padStart(3,'0')}`, 'success', 3000);
 
-  // Show print modal (no auto-print)
+  // Auto-print the ticket right away — no extra clicks. The invoice is already
+  // saved and shows in Invoices; reports update automatically. Set
+  // cfg.printer.autoPrint = false to fall back to the manual print modal.
+  const _prCfg = (LS.get('tpv_config')||{}).printer || {};
   setTimeout(() => {
-    openPrintModal(sale);
+    if (_prCfg.autoPrint === false) { openPrintModal(sale); return; }
+    try { printBothTickets(sale); } catch(e) { openPrintModal(sale); }
   }, 200);
   // Clear sale-in-progress flag now that everything saved
   window._saleInProgress = false;
@@ -4094,17 +4120,41 @@ function openShiftModal() {
     </div>`);
     return;
   }
+  // "What's in the drawer right now" = the cash counted at the LAST shift close
+  // (assuming no money was removed since). On the very first shift ever there is
+  // no history, so we start at 0 and the user types what's physically there.
+  const closedShifts = (LS.get('tpv_shifts')||[])
+    .filter(s => s.status === 'closed' && s.closedAt)
+    .sort((a,b) => new Date(b.closedAt) - new Date(a.closedAt));
+  const lastClose = closedShifts[0];
+  const lastBalance = lastClose ? (lastClose.countedCash ?? lastClose.expectedCash ?? lastClose.openingFloat ?? 0) : null;
+  const isFirst = lastBalance === null;
+  const startVal = isFirst ? 0 : lastBalance;
+  const closedWhen = lastClose && lastClose.closedAt ? new Date(lastClose.closedAt).toLocaleString() : '';
+
+  const reminder = isFirst
+    ? `<p style="color:var(--text-sec);margin-bottom:16px">This is your first shift — enter the cash currently in the register.</p>`
+    : `<div style="background:#e8f4ff;border:1px solid #bcdcff;border-radius:10px;padding:12px;margin-bottom:14px;font-size:13px;line-height:1.6">
+         💰 Last time you closed (<strong>${closedWhen}</strong>) the register had
+         <strong style="font-family:'Space Mono',monospace">${fmt(lastBalance)}</strong>.<br>
+         <span style="color:var(--text-sec)">If no cash was removed, keep it. Otherwise edit the real amount.</span>
+       </div>`;
+
   showModal(`<div class="modal modal-sm">
     <div class="modal-header"><span class="modal-title">Open Shift</span><button class="modal-close" onclick="this.closest('.modal-overlay').remove()">×</button></div>
     <div class="modal-body">
-      <p style="color:var(--text-sec);margin-bottom:16px">Enter the opening float for this shift.</p>
-      <div class="form-group"><label>Opening Float (Rs)</label><input type="number" id="opening-float" step="1" min="0" value="0" placeholder="0"></div>
+      ${reminder}
+      <div class="form-group"><label>${isFirst ? 'Opening Float (Rs)' : 'Cash in register now (Rs)'}</label>
+        <input type="number" id="opening-float" step="1" min="0" value="${startVal}" placeholder="0"
+          style="font-family:'Space Mono',monospace;font-size:18px;font-weight:700;text-align:right">
+      </div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
       <button class="btn btn-primary" onclick="confirmOpenShift()">Open Shift</button>
     </div>
   </div>`);
+  setTimeout(() => { const el = document.getElementById('opening-float'); if (el) { el.focus(); el.select(); } }, 100);
 }
 
 function confirmOpenShift() {
@@ -4122,6 +4172,24 @@ function confirmOpenShift() {
     status: 'open'
   };
   const shifts = LS.get('tpv_shifts') || [];
+  // SINGLE-SHIFT RULE: never allow two open shifts at once. Any shift still
+  // marked "open" (from any cashier / forgotten session) is auto-closed and its
+  // sales stay attached to it — the new shift starts clean. This prevents sales
+  // drifting into a stale shift and the cash count not matching the drawer.
+  const now = new Date().toISOString();
+  shifts.forEach(s => {
+    if (s.status === 'open') {
+      s.status = 'closed';
+      s.closedAt = now;
+      s.forceClosedBecauseOrphan = true;
+      const shSales = (LS.get('tpv_sales')||[]).filter(x => x.shiftId === s.id && x.status === 'completed');
+      s.cashSales = shSales.filter(x=>x.paymentMethod==='cash').reduce((a,x)=>a+x.total,0);
+      s.cardSales = shSales.filter(x=>x.paymentMethod==='card').reduce((a,x)=>a+x.total,0);
+      s.otherSales = shSales.filter(x=>x.paymentMethod==='other').reduce((a,x)=>a+x.total,0);
+      s.expectedCash = (s.openingFloat||0) + s.cashSales;
+      if (s.countedCash == null) s.countedCash = s.expectedCash;
+    }
+  });
   shifts.push(shift);
   LS.set('tpv_shifts', shifts);
   state.activeShift = shift;
@@ -6143,12 +6211,19 @@ function renderCash(container) {
 
   // Build chronological transactions: opening floats, shift closes, cash movements
   const events = [];
-  shifts.forEach(sh => {
-    if (sh.openingFloat) events.push({
+  // Track the cash physically in the drawer carried over between shifts. A shift's
+  // opening float represents the TOTAL in the drawer at start (= previous close,
+  // unless cash was added/removed). So the real money movement at open is only the
+  // DELTA vs the carryover — otherwise the carried-over cash would be counted twice.
+  let carryDrawer = 0;
+  shifts.forEach((sh, shIdx) => {
+    const openTotal = sh.openingFloat || 0;
+    const openInflow = shIdx === 0 ? openTotal : (openTotal - carryDrawer);
+    if (openInflow !== 0 || shIdx === 0) events.push({
       date: sh.openedAt, type: 'open',
       desc: `Shift Open — ${sh.cashierName||'Cashier'}`,
-      detail: `Opening Float`,
-      category: 'Shift Open', amount: sh.openingFloat
+      detail: shIdx === 0 ? `Opening Float` : (openInflow > 0 ? `Cash added at open` : openInflow < 0 ? `Cash removed at open` : `Carried over`),
+      category: 'Shift Open', amount: openInflow
     });
     (sh.movements||[]).forEach(m => events.push({
       date: m.date, type: m.type === 'in' ? 'in' : 'out',
@@ -6174,6 +6249,13 @@ function renderCash(container) {
         cashier: sh.cashierName
       });
     }
+    // Cash physically left in the drawer at the end of this shift → carries to next.
+    const movIn = (sh.movements||[]).filter(m=>m.type==='in').reduce((a,m)=>a+m.amount,0);
+    const movOut = (sh.movements||[]).filter(m=>m.type!=='in').reduce((a,m)=>a+m.amount,0);
+    const shSalesAll = sales.filter(s => s.shiftId === sh.id && s.status === 'completed');
+    const cashSalesAll = sh.cashSales ?? shSalesAll.filter(s=>s.paymentMethod==='cash').reduce((a,s)=>a+s.total,0);
+    const expectedDrawer = (sh.openingFloat||0) + cashSalesAll + movIn - movOut;
+    carryDrawer = (sh.status === 'closed') ? (sh.countedCash ?? sh.expectedCash ?? expectedDrawer) : expectedDrawer;
   });
   events.sort((a,b)=>new Date(a.date)-new Date(b.date));
   // Running balance
